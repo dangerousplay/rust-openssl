@@ -12,11 +12,40 @@ use x509::extension::{
     SubjectKeyIdentifier,
 };
 use x509::store::X509StoreBuilder;
-use x509::{KeyUsageFlags, X509Name, X509Req, X509StoreContext, X509VerifyResult, X509};
+use x509::{KeyUsageFlags, X509Name, X509Req, X509StoreContext, X509VerifyResult, X509, X509Builder, CaStatus, MaybeCaStatus};
+use x509::CaStatus::MaybeCa;
 
 fn pkey() -> PKey<Private> {
     let rsa = Rsa::generate(2048).unwrap();
     PKey::from_rsa(rsa).unwrap()
+}
+
+fn generate_default_cert(key: &PKey<Private>) -> X509Builder {
+
+    let mut name = X509Name::builder().unwrap();
+    name.append_entry_by_nid(Nid::COMMONNAME, "foobar.com")
+        .unwrap();
+    let name = name.build();
+
+    let mut builder = X509::builder().unwrap();
+    builder.set_version(2).unwrap();
+    builder.set_subject_name(&name).unwrap();
+    builder.set_issuer_name(&name).unwrap();
+    builder
+        .set_not_before(&Asn1Time::days_from_now(0).unwrap())
+        .unwrap();
+    builder
+        .set_not_after(&Asn1Time::days_from_now(365).unwrap())
+        .unwrap();
+    builder.set_pubkey(&key).unwrap();
+
+    let mut serial = BigNum::new().unwrap();
+    serial.rand(128, MsbOption::MAYBE_ZERO, false).unwrap();
+    builder
+        .set_serial_number(&serial.to_asn1_integer().unwrap())
+        .unwrap();
+
+    builder
 }
 
 #[test]
@@ -482,3 +511,104 @@ fn test_verify_fails() {
         .init(&store, &cert, &chain, |c| c.verify_cert())
         .unwrap());
 }
+
+#[test]
+fn test_check_ca() {
+    let pkey = pkey();
+
+    //A Certificate with basic constraints CA and critical
+    let mut builder = generate_default_cert(&pkey);
+
+    let basic_constraints = BasicConstraints::new().critical().ca().build().unwrap();
+    builder.append_extension(basic_constraints).unwrap();
+
+    builder.sign(&pkey, MessageDigest::sha256()).unwrap();
+
+    let x509 = builder.build();
+
+    let actual: CaStatus = x509.is_ca();
+
+    //Should be a CA
+    assert_eq!(actual, CaStatus::IsCa);
+}
+
+#[test]
+fn test_check_ku_not_ca() {
+    let pkey = pkey();
+
+    //A certificate with Key Usage denying cert signing
+    let mut builder = generate_default_cert(&pkey);
+
+    let basic_constraints = BasicConstraints::new().critical().ca().build().unwrap();
+    builder.append_extension(basic_constraints).unwrap();
+
+    let key_usage = KeyUsage::new()
+        .key_agreement()
+        .critical()
+        .build()
+        .unwrap();
+
+    builder.append_extension(key_usage).unwrap();
+
+    builder.sign(&pkey, MessageDigest::sha256()).unwrap();
+
+    let x509 = builder.build();
+
+    let actual: CaStatus = x509.is_ca();
+
+    //Should not be a CA
+    assert_eq!(actual, CaStatus::NotCa);
+}
+
+#[test]
+fn test_check_maybe_ku_ca() {
+    let pkey = pkey();
+
+    //A certificate without Basic constraints but with key usage
+    let mut builder = generate_default_cert(&pkey);
+
+    let key_usage = KeyUsage::new()
+        .key_cert_sign()
+        .critical()
+        .build()
+        .unwrap();
+
+    builder.append_extension(key_usage).unwrap();
+
+    builder.sign(&pkey, MessageDigest::sha256()).unwrap();
+
+    let x509 = builder.build();
+
+    let actual: CaStatus = x509.is_ca();
+
+    //Should be a Maybe Ca, Key Usage present
+    assert_eq!(actual, CaStatus::MaybeCa(MaybeCaStatus::BcAbsentKeyUsageKCS));
+}
+
+#[test]
+fn test_check_not_ca() {
+    let pkey = pkey();
+
+    //A certificate with basic constraints without CA
+    let mut builder = generate_default_cert(&pkey);
+
+    let basic_constraints = BasicConstraints::new().critical().build().unwrap();
+    builder.append_extension(basic_constraints).unwrap();
+
+    let key_usage = KeyUsage::new()
+        .key_cert_sign()
+        .build()
+        .unwrap();
+
+    builder.append_extension(key_usage).unwrap();
+
+    builder.sign(&pkey, MessageDigest::sha256()).unwrap();
+
+    let x509 = builder.build();
+
+    let actual: CaStatus = x509.is_ca();
+
+    //Should not be a CA
+    assert_eq!(actual, CaStatus::NotCa);
+}
+

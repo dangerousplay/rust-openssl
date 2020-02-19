@@ -380,6 +380,51 @@ impl X509Builder {
     }
 }
 
+/// The possible states of a check if certificate is a CA
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaStatus {
+    NotCa,
+    IsCa,
+    MaybeCa(MaybeCaStatus)
+}
+
+/// Maybe the certificate is a CA, means that the
+/// certificate could have been used to sign other certificates.
+///
+/// Meaning of the status:
+/// * `BcAbsent`: Basic constraints absent.
+/// * `BcAbsentV1SelfSigned`: Basic constraints absent but self signed v1.
+/// * `BcAbsentKeyUsageKCS`: Basic constraints absent but `keyUsage` present and `keyCertSign` asserted.
+/// * `OldCa`: Older certificates could have Netscape-specific CA types.
+///
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MaybeCaStatus {
+    BcAbsentKeyUsageKCS,
+    BcAbsentV1SelfSigned,
+    OldCa
+}
+
+impl MaybeCaStatus {
+    pub(crate) fn from_raw(value: c_int) -> Option<Self> {
+        match value {
+            3 => Some(MaybeCaStatus::BcAbsentV1SelfSigned),
+            4 => Some(MaybeCaStatus::BcAbsentKeyUsageKCS),
+            5 => Some(MaybeCaStatus::OldCa),
+            _ => None
+        }
+    }
+}
+
+impl CaStatus {
+    pub fn from_raw(value: c_int) -> Option<Self> {
+        match value {
+            0 => Some(CaStatus::NotCa),
+            1 => Some(CaStatus::IsCa),
+            v => MaybeCaStatus::from_raw(v).map(CaStatus::MaybeCa)
+        }
+    }
+}
+
 foreign_type_and_impl_send_sync! {
     type CType = ffi::X509;
     fn drop = ffi::X509_free;
@@ -688,6 +733,18 @@ impl X509Ref {
             let r = ffi::X509_check_issued(self.as_ptr(), subject.as_ptr());
             X509VerifyResult::from_raw(r)
         }
+    }
+
+    /// Check if the certificate is a CA certificate.
+    ///
+    /// This corresponds to [`X509_check_ca`] function.
+    ///
+    pub fn is_ca(&self) -> CaStatus {
+        let response = unsafe {
+            ffi::X509_check_ca(self.as_ptr())
+        };
+
+        CaStatus::from_raw(response).expect("Bug, value should be in range")
     }
 
     /// Check if the certificate is signed using the given public key.

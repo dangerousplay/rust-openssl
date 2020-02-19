@@ -101,4 +101,6 @@ extern "C" {
     );
 
     pub fn X509_get1_ocsp(x: *mut X509) -> *mut stack_st_OPENSSL_STRING;
+
+    pub fn X509_check_ca(x: *mut X509) -> c_int;
 }
